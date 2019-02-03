@@ -1,22 +1,7 @@
 #include <application.h>
 
-#define REMOTE 0x206206
-#define PIN_DATA BC_GPIO_P17
-#define PIN_VCC BC_GPIO_P16
-#define PIN_GND BC_GPIO_P15
-#define SYMBOL 640
-#define CMD_UP 0x2
-#define CMD_STOP 0x1
-#define CMD_DOWN 0x4
-#define CMD_PROG 0x8
-
 // LED instance
 bc_led_t led;
-
-// Button instance
-bc_button_t button;
-
-uint32_t rollingCode = 1;
 
 uint8_t frame[7];
 volatile uint8_t sync;
@@ -25,17 +10,15 @@ volatile state_type state;
 volatile uint8_t state_i;
 volatile uint8_t state_j;
 
-void build_frame(uint8_t button)
+void build_frame(uint32_t shutter_id, uint32_t code, uint8_t button)
 {
-    frame[0] = 0xA7;              // Encryption key. Doesn't matter much
-    frame[1] = button << 4;       // Which button did  you press? The 4 LSB will be the checksum
-    frame[2] = rollingCode >> 8;  // Rolling code (big endian)
-    frame[3] = rollingCode;       // Rolling code
-    frame[4] = REMOTE >> 16;      // Remote address
-    frame[5] = REMOTE >> 8;       // Remote address
-    frame[6] = REMOTE;            // Remote address
-
-    bc_log_dump(frame, 7, "Frame");
+    frame[0] = 0xA7;                    // Encryption key. Doesn't matter much
+    frame[1] = button << 4;             // Which button did  you press? The 4 LSB will be the checksum
+    frame[2] = code >> 8;               // Rolling code (big endian)
+    frame[3] = code & 0xFF;             // Rolling code
+    frame[4] = shutter_id >> 16;        // Remote address
+    frame[5] = (shutter_id >> 8) & 0xFF;// Remote address
+    frame[6] = shutter_id & 0xFF;       // Remote address
 
     // Checksum calculation: a XOR of all the nibbles
     uint8_t checksum = 0;
@@ -45,24 +28,15 @@ void build_frame(uint8_t button)
     }
     checksum &= 0b1111; // We keep the last 4 bits only
 
-
     // Checksum integration
     frame[1] |= checksum; // If a XOR of all the nibbles is equal to 0, the blinds will
                           // consider the checksum ok.
-
-    bc_log_dump(frame, 7, "With checksum");
 
     // Obfuscation: a XOR of all the bytes
     for (uint8_t i = 1; i < 7; i++)
     {
         frame[i] ^= frame[i - 1];
     }
-
-    bc_log_dump(frame, 7, "Obfuscated");
-
-    bc_log_info("Rolling Code: %d", rollingCode);
-    rollingCode++;
-    bc_log_info("Next: %d", rollingCode);
 }
 
 bool send_command()
@@ -216,44 +190,48 @@ void TIM3_IRQHandler(void)
     }
 }
 
-void button_event_handler(bc_button_t *self, bc_button_event_t event, void *event_param)
+void somfy_cmd(uint64_t *id, const char *topic, void *value, void *param)
 {
-    bool send = false;
+    bc_led_pulse(&led, 100);
 
-    if (event == BC_BUTTON_EVENT_CLICK)
+    uint32_t shutter_id = (uint32_t) param;
+    uint32_t code = *((uint32_t *) value);
+    uint8_t cmd = 0;
+    size_t topic_len = strlen(topic);
+
+    if (topic[topic_len - 2] == 'u' && topic[topic_len - 1] == 'p')
     {
-        bc_led_pulse(&led, 200);
-
-        build_frame(CMD_DOWN);
-        send = true;
+        cmd = CMD_UP;
+    }
+    else if (topic[topic_len - 1] == 'p')
+    {
+        cmd = CMD_STOP;
+    }
+    else if (topic[topic_len - 1] == 'n')
+    {
+        cmd = CMD_DOWN;
+    }
+    else if (topic[topic_len - 1] == 'g')
+    {
+        cmd = CMD_PROG;
     }
 
-    if (event == BC_BUTTON_EVENT_HOLD)
+    if (shutter_id && code && cmd)
     {
-        bc_led_pulse(&led, 200);
-
-        build_frame(CMD_PROG);
-        send = true;
-    }
-
-    if (send)
-    {
+        build_frame(shutter_id, code, cmd);
         send_command();
     }
 }
 
 void application_init(void)
 {
-    bc_log_init(BC_LOG_LEVEL_DUMP, BC_LOG_TIMESTAMP_ABS);
-
     // Initialize LED
     bc_led_init(&led, BC_GPIO_LED, false, false);
     bc_led_pulse(&led, 2000);
 
-    // Initialize button
-    bc_button_init(&button, BC_GPIO_BUTTON, BC_GPIO_PULL_DOWN, false);
-    bc_button_set_event_handler(&button, button_event_handler, NULL);
-    bc_button_set_hold_time(&button, 600);
+    // Initialize radio
+    bc_radio_init(BC_RADIO_MODE_NODE_LISTENING);
+    bc_radio_set_subs((bc_radio_sub_t *) subs, sizeof(subs)/sizeof(bc_radio_sub_t));
 
     bc_gpio_init(PIN_DATA);
     bc_gpio_set_mode(PIN_DATA, BC_GPIO_MODE_OUTPUT);
@@ -265,4 +243,8 @@ void application_init(void)
     bc_gpio_init(PIN_GND);
     bc_gpio_set_mode(PIN_GND, BC_GPIO_MODE_OUTPUT);
     bc_gpio_set_output(PIN_GND, 0);
+
+    bc_radio_pairing_request("bcf-somfy-controller", VERSION);
+
+    bc_led_pulse(&led, 2000);
 }
