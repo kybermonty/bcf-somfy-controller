@@ -39,6 +39,7 @@ typedef enum
 } state_type;
 
 void somfy_cmd(uint64_t *id, const char *topic, void *value, void *param);
+void somfy_TIM3_handler(void *param);
 
 // subscribe table, format: topic, expect payload type, callback, user param
 static const bc_radio_sub_t subs[] = {

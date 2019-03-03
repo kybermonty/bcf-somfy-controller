@@ -9,8 +9,9 @@ volatile bool is_busy;
 volatile state_type state;
 volatile uint8_t state_i;
 volatile uint8_t state_j;
+volatile uint8_t frame_cnt;
 
-void build_frame(uint32_t shutter_id, uint32_t code, uint8_t button)
+void somfy_build_frame(uint32_t shutter_id, uint32_t code, uint8_t button)
 {
     frame[0] = 0xA7;                    // Encryption key. Doesn't matter much
     frame[1] = button << 4;             // Which button did  you press? The 4 LSB will be the checksum
@@ -39,7 +40,7 @@ void build_frame(uint32_t shutter_id, uint32_t code, uint8_t button)
     }
 }
 
-bool send_command()
+bool somfy_send_command()
 {
     if (TIM3->CR1 && TIM_CR1_CEN)
     {
@@ -64,16 +65,19 @@ bool send_command()
     // Enable TIM3 interrupts
     NVIC_EnableIRQ(TIM3_IRQn);
 
+    bc_timer_set_irq_handler(TIM3, somfy_TIM3_handler, NULL);
+
     is_busy = true;
     state = STATE_BEGIN;
     sync = 2;
+    frame_cnt = 0;
 
     TIM3->CR1 |= TIM_CR1_CEN;
 
     return true;
 }
 
-void TIM3_IRQHandler(void)
+void somfy_TIM3_handler(void *param)
 {
     TIM3->SR = ~TIM_DIER_UIE;
 
@@ -168,16 +172,17 @@ void TIM3_IRQHandler(void)
     {
         bc_gpio_set_output(PIN_DATA, 0);
         TIM3->ARR = 30415 - 1;
-        if (sync == 2)
+        if (frame_cnt == 2)
+        {
+            state = STATE_END;
+        }
+        else
         {
             sync = 7;
             state = STATE_HWSYNC;
             state_i = 0;
         }
-        else
-        {
-            state = STATE_END;
-        }
+        frame_cnt++;
     }
     else if (state == STATE_END)
     {
@@ -186,6 +191,7 @@ void TIM3_IRQHandler(void)
 
         is_busy = false;
 
+        bc_timer_clear_irq_handler(TIM3);
         bc_system_pll_disable();
     }
 }
@@ -218,8 +224,8 @@ void somfy_cmd(uint64_t *id, const char *topic, void *value, void *param)
 
     if (shutter_id && code && cmd)
     {
-        build_frame(shutter_id, code, cmd);
-        send_command();
+        somfy_build_frame(shutter_id, code, cmd);
+        somfy_send_command();
     }
 }
 
